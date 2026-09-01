@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <!-- System CAs only. The pinned annas-archive.org certificate
+                 expired in January 2024; on devices that honored the pinned
+                 anchor (arm64-v8a builds on newer Android TLS stacks) the
+                 handshake failed for search and book pages while cached
+                 thumbnails kept loading, which made it look like an
+                 architecture-specific outage. Anna's Archive sits behind
+                 DDoS-Guard regardless - the pin bought nothing. -->
+            <certificates src="system"/>
+        </trust-anchors>
+    </base-config>
+
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">secure.example.com</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+    </domain-config>
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">annas-archive.org</domain>
+    </domain-config>
+</network-security-config>
