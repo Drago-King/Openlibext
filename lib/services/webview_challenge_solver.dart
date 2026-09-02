@@ -107,7 +107,7 @@ class WebviewChallengeSolver {
 
     browser = InAppBrowser();
 
-    await browser.openUrl(
+    await browser.openUrlRequest(
       urlRequest: URLRequest(url: WebUri(url)),
       settings: InAppBrowserClassSettings(
         browserSettings: InAppBrowserSettings(
