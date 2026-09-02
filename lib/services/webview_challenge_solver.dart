@@ -6,8 +6,8 @@
 // we let a real browser engine pass the challenge and capture the fully rendered
 // page HTML:
 //
-//   - Android/iOS: HeadlessInAppWebView runs invisible and automatic. If a real
-//     human CAPTCHA appears, callers fall back to the visible solver page.
+//   - Android/iOS: InAppBrowser opens a visible browser so the user can
+//     complete any verification that requires interaction.
 //   - Linux/Windows/macOS: desktop_webview_window opens a visible window (the
 //     challenge usually auto-passes within seconds).
 //
@@ -70,22 +70,23 @@ class WebviewChallengeSolver {
   /// Solves the challenge for [url] and returns the fully rendered page HTML,
   /// or null if the challenge could not be cleared within [timeout].
   ///
-  /// Desktop opens a visible window (default 3 min — the user may need to
-  /// click a checkbox); mobile runs a headless webview (default 60 s,
-  /// fully automatic). The result is also stored in ChallengeHtmlCache.
+  /// Desktop opens a visible window (default 3 min); mobile opens a visible
+  /// InAppBrowser (default 60 s) so the user can complete verification.
+  /// The result is also stored in ChallengeHtmlCache.
   static Future<String?> fetchHtmlAfterChallenge(
     String url, {
     Duration? timeout,
   }) async {
     if (!isSupported || !guiEnabled) return null;
 
-    final effectiveTimeout = timeout ??
+    final effectiveTimeout =
+        timeout ??
         (PlatformUtils.isMobile
             ? const Duration(seconds: 60)
             : const Duration(minutes: 3));
 
     final html = PlatformUtils.isMobile
-        ? await _solveHeadless(url, effectiveTimeout)
+        ? await _solveVisibleMobile(url, effectiveTimeout)
         : await _solveDesktopWindow(url, effectiveTimeout);
 
     if (html != null) {
@@ -95,125 +96,110 @@ class WebviewChallengeSolver {
   }
 
   // ------------------------------------------------------------------
-  // MOBILE: HeadlessInAppWebView (invisible, automatic)
+  // MOBILE: Visible InAppBrowser
   // ------------------------------------------------------------------
 
- static Future<String?> _solveHeadless(
-    String url, Duration timeout) async {
-  InAppBrowser? browser;
+  static Future<String?> _solveVisibleMobile(
+    String url,
+    Duration timeout,
+  ) async {
+    InAppBrowser? browser;
 
-  try {
-    final completer = Completer<String?>();
+    try {
+      final completer = Completer<String?>();
 
-    browser = InAppBrowser();
+      browser = InAppBrowser();
 
-    await browser.openUrlRequest(
-      urlRequest: URLRequest(url: WebUri(url)),
-      settings: InAppBrowserClassSettings(
-        browserSettings: InAppBrowserSettings(
-          hideUrlBar: false,
-          hideToolbarTop: false,
+      await browser.openUrlRequest(
+        urlRequest: URLRequest(url: WebUri(url)),
+        settings: InAppBrowserClassSettings(
+          browserSettings: InAppBrowserSettings(
+            hideUrlBar: false,
+            hideToolbarTop: false,
+          ),
+          webViewSettings: InAppWebViewSettings(
+            javaScriptEnabled: true,
+            javaScriptCanOpenWindowsAutomatically: true,
+            supportZoom: true,
+            incognito: false,
+            clearCache: false,
+          ),
         ),
-        webViewSettings: InAppWebViewSettings(
-          javaScriptEnabled: true,
-          javaScriptCanOpenWindowsAutomatically: true,
-          supportZoom: true,
-          incognito: false,
-          clearCache: false,
-        ),
-      ),
-    );
+      );
 
-    final deadline = DateTime.now().add(timeout);
+      final deadline = DateTime.now().add(timeout);
 
-    while (DateTime.now().isBefore(deadline)) {
-      await Future.delayed(const Duration(seconds: 2));
-
-      try {
-        final controller = browser.webViewController;
-        if (controller == null) continue;
-
-        final title = await controller.getTitle() ?? '';
-
-        final body = await _js(
-          controller,
-          "document.body ? document.body.innerHTML.slice(0, 5000) : ''",
-        ) ?? '';
-
-        if (isChallengePage(
-          title: title,
-          bodySnippet: body,
-        )) {
-          _logger.debug(
-            'Browser verification still active',
-            tag: 'ChallengeSolver',
-            metadata: {'title': title},
-          );
-          continue;
-        }
-
-        final readyState =
-            await _js(controller, "document.readyState") ?? '';
-
-        if (readyState != 'complete') continue;
-
+      while (DateTime.now().isBefore(deadline)) {
         await Future.delayed(const Duration(seconds: 2));
 
-        final html = await _js(
-          controller,
-          "document.documentElement.outerHTML",
-        );
+        try {
+          final controller = browser.webViewController;
+          if (controller == null) continue;
 
-        if (html != null &&
-            html.length > 1000 &&
-            !isChallengePage(
-              title: title,
-              bodySnippet: html,
-            )) {
-          if (!completer.isCompleted) {
-            completer.complete(html);
+          final title = await controller.getTitle() ?? '';
+
+          final body =
+              await _js(
+                controller,
+                "document.body ? document.body.innerHTML.slice(0, 5000) : ''",
+              ) ??
+              '';
+
+          if (isChallengePage(title: title, bodySnippet: body)) {
+            _logger.debug(
+              'Browser verification still active',
+              tag: 'ChallengeSolver',
+              metadata: {'title': title},
+            );
+            continue;
           }
-          break;
+
+          final readyState = await _js(controller, "document.readyState") ?? '';
+
+          if (readyState != 'complete') continue;
+
+          await Future.delayed(const Duration(seconds: 2));
+
+          final html = await _js(
+            controller,
+            "document.documentElement.outerHTML",
+          );
+
+          if (html != null &&
+              html.length > 1000 &&
+              !isChallengePage(title: title, bodySnippet: html)) {
+            if (!completer.isCompleted) {
+              completer.complete(html);
+            }
+            break;
+          }
+        } catch (e) {
+          _logger.debug(
+            'Visible browser polling failed',
+            tag: 'ChallengeSolver',
+            metadata: {'error': e.toString()},
+          );
         }
-      } catch (e) {
-        _logger.debug(
-          'Visible browser polling failed',
-          tag: 'ChallengeSolver',
-          metadata: {'error': e.toString()},
-        );
       }
-    }
 
-    if (!completer.isCompleted) {
-      completer.complete(null);
-    }
+      if (!completer.isCompleted) {
+        completer.complete(null);
+      }
 
-    return await completer.future;
-  } catch (e, st) {
-    _logger.error(
-      'Visible mobile challenge solver failed',
-      tag: 'ChallengeSolver',
-      error: e,
-      stackTrace: st,
-    );
-    return null;
-  } finally {
-    try {
-      await browser?.close();
-    } catch (_) {}
-  }
-}
-
-  static Future<InAppWebViewController?> _waitForController(
-      Completer<InAppWebViewController> completer) async {
-    if (completer.isCompleted) return await completer.future;
-    // Poll the completer without a typed onTimeout closure.
-    final deadline = DateTime.now().add(const Duration(seconds: 5));
-    while (DateTime.now().isBefore(deadline)) {
-      if (completer.isCompleted) return await completer.future;
-      await Future.delayed(const Duration(milliseconds: 200));
+      return await completer.future;
+    } catch (e, st) {
+      _logger.error(
+        'Visible mobile challenge solver failed',
+        tag: 'ChallengeSolver',
+        error: e,
+        stackTrace: st,
+      );
+      return null;
+    } finally {
+      try {
+        await browser?.close();
+      } catch (_) {}
     }
-    return null;
   }
 
   // ------------------------------------------------------------------
@@ -221,7 +207,9 @@ class WebviewChallengeSolver {
   // ------------------------------------------------------------------
 
   static Future<String?> _solveDesktopWindow(
-      String url, Duration timeout) async {
+    String url,
+    Duration timeout,
+  ) async {
     desktop_webview.Webview? webview;
     var closedByUser = false;
     try {
@@ -240,13 +228,16 @@ class WebviewChallengeSolver {
       while (DateTime.now().isBefore(deadline)) {
         await Future.delayed(const Duration(milliseconds: 1500));
         if (closedByUser) {
-          _logger.info('Challenge webview closed by user',
-              tag: 'ChallengeSolver');
+          _logger.info(
+            'Challenge webview closed by user',
+            tag: 'ChallengeSolver',
+          );
           return null;
         }
 
         final title = await _js(webview, "document.title") ?? '';
-        final bodySnippet = await _js(
+        final bodySnippet =
+            await _js(
               webview,
               "(document.body ? document.body.innerHTML.slice(0, 3000) : '')",
             ) ??
@@ -256,34 +247,44 @@ class WebviewChallengeSolver {
 
         if (isChallengePage(title: title, bodySnippet: bodySnippet)) {
           titleOkPolls = 0;
-          _logger.debug('Challenge still active',
-              tag: 'ChallengeSolver',
-              metadata: {'title': title.isEmpty ? '(none)' : title});
+          _logger.debug(
+            'Challenge still active',
+            tag: 'ChallengeSolver',
+            metadata: {'title': title.isEmpty ? '(none)' : title},
+          );
           continue;
         }
 
         final readyState = await _js(webview, "document.readyState") ?? '';
         if (readyState != 'complete') {
           titleOkPolls++;
-          _logger.debug('Page rendering, waiting for readyState=complete',
-              tag: 'ChallengeSolver',
-              metadata: {'readyState': readyState, 'polls': titleOkPolls});
+          _logger.debug(
+            'Page rendering, waiting for readyState=complete',
+            tag: 'ChallengeSolver',
+            metadata: {'readyState': readyState, 'polls': titleOkPolls},
+          );
           if (titleOkPolls < 10) continue;
         }
 
         final html = await _js(webview, "document.documentElement.outerHTML");
         if (html != null && html.isNotEmpty) {
-          _logger.info('Challenge solved, captured page HTML',
-              tag: 'ChallengeSolver',
-              metadata: {'length': html.length, 'title': title});
+          _logger.info(
+            'Challenge solved, captured page HTML',
+            tag: 'ChallengeSolver',
+            metadata: {'length': html.length, 'title': title},
+          );
           return html;
         }
       }
       _logger.warning('Challenge solver timed out', tag: 'ChallengeSolver');
       return null;
     } catch (e, st) {
-      _logger.error('Desktop challenge solver failed',
-          tag: 'ChallengeSolver', error: e, stackTrace: st);
+      _logger.error(
+        'Desktop challenge solver failed',
+        tag: 'ChallengeSolver',
+        error: e,
+        stackTrace: st,
+      );
       return null;
     } finally {
       // Closing programmatically crashed GTK in earlier versions; the user
@@ -302,7 +303,10 @@ class WebviewChallengeSolver {
     if (ready != 'complete') return null;
     // Settle delay so late XHR content lands in the DOM.
     await Future.delayed(const Duration(milliseconds: 2000));
-    final html = await _js(controllerOrWebview, "document.documentElement.outerHTML");
+    final html = await _js(
+      controllerOrWebview,
+      "document.documentElement.outerHTML",
+    );
     return html;
   }
 
