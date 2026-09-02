@@ -535,6 +535,10 @@ class AnnasArchieve {
       required String currentBaseUrl,
       int page = 1}) {
     final encodedQuery = Uri.encodeQueryComponent(searchQuery);
+    final encodedSort = Uri.encodeQueryComponent(sort);
+    final encodedContent = Uri.encodeQueryComponent(content);
+    final encodedFileType = Uri.encodeQueryComponent(fileType);
+    final encodedLanguage = Uri.encodeQueryComponent(language);
     // Anna's Archive paginates with &page=N after the query; page 1 is
     // the default and the parameter is omitted to keep cached challenge
     // pages matching.
@@ -545,27 +549,27 @@ class AnnasArchieve {
 
     // Build URL with parameters in correct order for Anna's Archive
     // Working format: /search?index=&sort=&lang=nl&display=&q=query
-    String url = '$currentBaseUrl/search?index=&sort=$sort';
+    String url = '$currentBaseUrl/search?index=&sort=$encodedSort';
 
     // Add language filter if specified (must be before q=)
     if (language.isNotEmpty) {
-      url += '&lang=$language';
+      url += '&lang=$encodedLanguage';
     }
 
     // Add display parameter
     url += '&display=';
 
     // Add search query
-    url += '&q=$searchQuery';
+    url += '&q=$encodedQuery';
 
     // Add content filter only if specified
     if (content.isNotEmpty) {
-      url += '&content=$content';
+      url += '&content=$encodedContent';
     }
 
     // Add extension filter only if specified
     if (fileType.isNotEmpty) {
-      url += '&ext=$fileType';
+      url += '&ext=$encodedFileType';
     }
 
     // Add year filter if specified
