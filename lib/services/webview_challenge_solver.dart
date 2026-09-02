@@ -103,12 +103,10 @@ class WebviewChallengeSolver {
     String url,
     Duration timeout,
   ) async {
-    InAppBrowser? browser;
-
     try {
       final completer = Completer<String?>();
 
-      browser = InAppBrowser();
+      final browser = _ChallengeBrowser(completer: completer, logger: _logger);
 
       await browser.openUrlRequest(
         urlRequest: URLRequest(url: WebUri(url)),
@@ -127,66 +125,16 @@ class WebviewChallengeSolver {
         ),
       );
 
-      final deadline = DateTime.now().add(timeout);
+      final result = await completer.future.timeout(
+        timeout,
+        onTimeout: () => null,
+      );
 
-      while (DateTime.now().isBefore(deadline)) {
-        await Future.delayed(const Duration(seconds: 2));
+      try {
+        await browser.close();
+      } catch (_) {}
 
-        try {
-          final controller = browser.webViewController;
-          if (controller == null) continue;
-
-          final title = await controller.getTitle() ?? '';
-
-          final body =
-              await _js(
-                controller,
-                "document.body ? document.body.innerHTML.slice(0, 5000) : ''",
-              ) ??
-              '';
-
-          if (isChallengePage(title: title, bodySnippet: body)) {
-            _logger.debug(
-              'Browser verification still active',
-              tag: 'ChallengeSolver',
-              metadata: {'title': title},
-            );
-            continue;
-          }
-
-          final readyState = await _js(controller, "document.readyState") ?? '';
-
-          if (readyState != 'complete') continue;
-
-          await Future.delayed(const Duration(seconds: 2));
-
-          final html = await _js(
-            controller,
-            "document.documentElement.outerHTML",
-          );
-
-          if (html != null &&
-              html.length > 1000 &&
-              !isChallengePage(title: title, bodySnippet: html)) {
-            if (!completer.isCompleted) {
-              completer.complete(html);
-            }
-            break;
-          }
-        } catch (e) {
-          _logger.debug(
-            'Visible browser polling failed',
-            tag: 'ChallengeSolver',
-            metadata: {'error': e.toString()},
-          );
-        }
-      }
-
-      if (!completer.isCompleted) {
-        completer.complete(null);
-      }
-
-      return await completer.future;
+      return result;
     } catch (e, st) {
       _logger.error(
         'Visible mobile challenge solver failed',
@@ -195,10 +143,6 @@ class WebviewChallengeSolver {
         stackTrace: st,
       );
       return null;
-    } finally {
-      try {
-        await browser?.close();
-      } catch (_) {}
     }
   }
 
@@ -328,6 +272,78 @@ class WebviewChallengeSolver {
       return s;
     } catch (_) {
       return null;
+    }
+  }
+}
+
+class _ChallengeBrowser extends InAppBrowser {
+  _ChallengeBrowser({required this.completer, required this.logger});
+
+  final Completer<String?> completer;
+  final AppLogger logger;
+
+  @override
+  Future<void> onLoadStop(WebUri? url) async {
+    if (completer.isCompleted) return;
+
+    try {
+      final controller = webViewController;
+      if (controller == null) return;
+
+      await Future.delayed(const Duration(seconds: 2));
+
+      final title = await controller.getTitle() ?? '';
+
+      final body = await controller.evaluateJavascript(
+        source: "document.body ? document.body.innerHTML.slice(0, 5000) : ''",
+      );
+
+      final bodyText = body?.toString() ?? '';
+
+      if (WebviewChallengeSolver.isChallengePage(
+        title: title,
+        bodySnippet: bodyText,
+      )) {
+        logger.debug(
+          'Browser verification still active',
+          tag: 'ChallengeSolver',
+          metadata: {'title': title},
+        );
+        return;
+      }
+
+      final html = await controller.evaluateJavascript(
+        source: "document.documentElement.outerHTML",
+      );
+
+      final htmlText = html?.toString() ?? '';
+
+      if (htmlText.length > 1000 &&
+          !WebviewChallengeSolver.isChallengePage(
+            title: title,
+            bodySnippet: htmlText,
+          )) {
+        logger.info(
+          'Challenge page cleared; captured browser HTML',
+          tag: 'ChallengeSolver',
+          metadata: {'url': url?.toString(), 'htmlLength': htmlText.length},
+        );
+
+        completer.complete(htmlText);
+      }
+    } catch (e) {
+      logger.debug(
+        'Browser onLoadStop capture failed',
+        tag: 'ChallengeSolver',
+        metadata: {'error': e.toString()},
+      );
+    }
+  }
+
+  @override
+  void onExit() {
+    if (!completer.isCompleted) {
+      completer.complete(null);
     }
   }
 }
