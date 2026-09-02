@@ -906,6 +906,23 @@ class DownloadManager {
       checkSumValid = false;
     }
 
+    if (!checkSumValid) {
+      _logger.error(
+        'Downloaded file failed MD5 verification',
+        tag: 'DownloadManager',
+        metadata: {
+          'expectedMd5': task.md5,
+          'fileName': fileName,
+        },
+      );
+
+      _handleDownloadFailure(
+        task.id,
+        'Downloaded file is corrupted (checksum failed)',
+      );
+      return;
+    }
+
     try {
       await _database.insert(MyBook(
         id: task.md5,
