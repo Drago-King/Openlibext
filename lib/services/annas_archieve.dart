@@ -231,7 +231,13 @@ class AnnasArchieve {
       ...defaultDioHeaders,
       if (headers != null) ...headers,
     };
-    return await dio.get(url, options: Options(headers: requestHeaders));
+    return await dio.get(
+      url,
+      options: Options(
+        headers: requestHeaders,
+        validateStatus: (status) => status != null && status < 600,
+      ),
+    );
   }
 
   String getMd5(String url) {
@@ -528,13 +534,13 @@ class AnnasArchieve {
       required bool enableFilters,
       required String currentBaseUrl,
       int page = 1}) {
-    searchQuery = searchQuery.replaceAll(" ", "+");
+    final encodedQuery = Uri.encodeQueryComponent(searchQuery);
     // Anna's Archive paginates with &page=N after the query; page 1 is
     // the default and the parameter is omitted to keep cached challenge
     // pages matching.
     final pageParam = page > 1 ? '&page=$page' : '';
     if (!enableFilters) {
-      return '$currentBaseUrl/search?q=$searchQuery$pageParam';
+      return '$currentBaseUrl/search?q=$encodedQuery$pageParam';
     }
 
     // Build URL with parameters in correct order for Anna's Archive
