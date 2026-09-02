@@ -167,6 +167,7 @@ class AnnasArchieve {
 
     Exception? lastException;
     String? lastUsedHost;
+    NetworkError? lastCloudflareError;
 
     // Try each instance - they should already be sorted by speed from auto-ranking
     for (int i = 0; i < instances.length; i++) {
@@ -195,6 +196,11 @@ class AnnasArchieve {
         } catch (e) {
           lastException = e is Exception ? e : Exception(e.toString());
 
+          if (e is NetworkError &&
+              e.type == NetworkErrorType.cloudflareBlock) {
+            lastCloudflareError = e;
+          }
+
           _logger.debug('Instance failed', tag: 'AnnasArchive', metadata: {
             'instance': instance.name,
             'attempt': attempt + 1,
@@ -210,10 +216,16 @@ class AnnasArchieve {
       }
     }
 
-    // All instances failed - throw with diagnostic info
+    // All instances failed.
     _logger.error('All instances failed', tag: 'AnnasArchive');
 
-    // Throw a diagnostic NetworkError instead of the raw exception
+    // Preserve the original Cloudflare/DDoS error so search()
+    // can invoke the browser challenge solver with the exact URL.
+    if (lastCloudflareError != null) {
+      throw lastCloudflareError;
+    }
+
+    // Otherwise retain the existing diagnostic error handling.
     throw await _handleErrorAsync(
       lastException ?? Exception('All instances failed'),
       targetHost: lastUsedHost,
