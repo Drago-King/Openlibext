@@ -98,81 +98,111 @@ class WebviewChallengeSolver {
   // MOBILE: HeadlessInAppWebView (invisible, automatic)
   // ------------------------------------------------------------------
 
-  static Future<String?> _solveHeadless(String url, Duration timeout) async {
-    HeadlessInAppWebView? headless;
-    try {
-      final completer = Completer<String?>();
-      final controllerHolder = Completer<InAppWebViewController>();
+ static Future<String?> _solveHeadless(
+    String url, Duration timeout) async {
+  InAppBrowser? browser;
 
-      headless = HeadlessInAppWebView(
-        initialUrlRequest: URLRequest(url: WebUri(url)),
-        initialSettings: InAppWebViewSettings(
+  try {
+    final completer = Completer<String?>();
+
+    browser = InAppBrowser();
+
+    await browser.openUrl(
+      urlRequest: URLRequest(url: WebUri(url)),
+      settings: InAppBrowserClassSettings(
+        browserSettings: InAppBrowserSettings(
+          hideUrlBar: false,
+          hideToolbarTop: false,
+        ),
+        webViewSettings: InAppWebViewSettings(
           javaScriptEnabled: true,
-          supportZoom: false,
+          javaScriptCanOpenWindowsAutomatically: true,
+          supportZoom: true,
           incognito: false,
           clearCache: false,
         ),
-        onLoadStop: (controller, loadedUrl) async {
-          try {
-            final title = (await controller.getTitle()) ?? '';
-            final bodySnippet = (await _js(
-                    controller, "document.body ? document.body.innerHTML.slice(0, 3000) : ''")) ??
-                '';
-            _logger.debug('Headless load stopped',
-                tag: 'ChallengeSolver',
-                metadata: {'title': title, 'url': loadedUrl.toString()});
-            if (isChallengePage(title: title, bodySnippet: bodySnippet)) {
-              return; // challenge page; wait for next load
-            }
-            final html = await _captureHtml(controller);
-            if (!completer.isCompleted) completer.complete(html);
-          } catch (e) {
-            _logger.debug('Headless onLoadStop check failed',
-                tag: 'ChallengeSolver', metadata: {'error': e.toString()});
-          }
-        },
-        onWebViewCreated: (controller) {
-          if (!controllerHolder.isCompleted) controllerHolder.complete(controller);
-        },
-      );
+      ),
+    );
 
-      unawaited(headless.run());
-      final deadline = DateTime.now().add(timeout);
-      InAppWebViewController? controller;
-      while (DateTime.now().isBefore(deadline)) {
-        if (completer.isCompleted) break;
-        // Headless webviews can stop loading without an onLoadStop for the
-        // final page; also poll the controller directly.
-        try {
-          controller ??= await _waitForController(controllerHolder);
-          if (controller != null) {
-            final title = (await controller.getTitle()) ?? '';
-            if (title.isNotEmpty &&
-                !isChallengePage(title: title, bodySnippet: '')) {
-              final html = await _captureHtml(controller);
-              if (html != null &&
-                  html.isNotEmpty &&
-                  !completer.isCompleted) {
-                completer.complete(html);
-              }
-            }
-          }
-        } catch (_) {}
-        await Future.delayed(const Duration(milliseconds: 1000));
-      }
+    final deadline = DateTime.now().add(timeout);
 
-      if (!completer.isCompleted) completer.complete(null);
-      return await completer.future;
-    } catch (e, st) {
-      _logger.error('Headless challenge solver failed',
-          tag: 'ChallengeSolver', error: e, stackTrace: st);
-      return null;
-    } finally {
+    while (DateTime.now().isBefore(deadline)) {
+      await Future.delayed(const Duration(seconds: 2));
+
       try {
-        await headless?.dispose();
-      } catch (_) {}
+        final controller = browser.webViewController;
+        if (controller == null) continue;
+
+        final title = await controller.getTitle() ?? '';
+
+        final body = await _js(
+          controller,
+          "document.body ? document.body.innerHTML.slice(0, 5000) : ''",
+        ) ?? '';
+
+        if (isChallengePage(
+          title: title,
+          bodySnippet: body,
+        )) {
+          _logger.debug(
+            'Browser verification still active',
+            tag: 'ChallengeSolver',
+            metadata: {'title': title},
+          );
+          continue;
+        }
+
+        final readyState =
+            await _js(controller, "document.readyState") ?? '';
+
+        if (readyState != 'complete') continue;
+
+        await Future.delayed(const Duration(seconds: 2));
+
+        final html = await _js(
+          controller,
+          "document.documentElement.outerHTML",
+        );
+
+        if (html != null &&
+            html.length > 1000 &&
+            !isChallengePage(
+              title: title,
+              bodySnippet: html,
+            )) {
+          if (!completer.isCompleted) {
+            completer.complete(html);
+          }
+          break;
+        }
+      } catch (e) {
+        _logger.debug(
+          'Visible browser polling failed',
+          tag: 'ChallengeSolver',
+          metadata: {'error': e.toString()},
+        );
+      }
     }
+
+    if (!completer.isCompleted) {
+      completer.complete(null);
+    }
+
+    return await completer.future;
+  } catch (e, st) {
+    _logger.error(
+      'Visible mobile challenge solver failed',
+      tag: 'ChallengeSolver',
+      error: e,
+      stackTrace: st,
+    );
+    return null;
+  } finally {
+    try {
+      await browser?.close();
+    } catch (_) {}
   }
+}
 
   static Future<InAppWebViewController?> _waitForController(
       Completer<InAppWebViewController> completer) async {
